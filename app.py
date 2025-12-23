@@ -7,11 +7,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 1. 頁面基礎設定
-st.set_page_config(page_title="五維自適應：Y軸鎖定終端", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="五維自適應：精準月視角", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("<style>.main { background-color: #0e1117; color: white; }</style>", unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600)
 def get_advanced_dynamic_data(symbol):
+    # 下載歷史數據
     df = yf.download(symbol, period="max", auto_adjust=True)
     if df.empty: return df
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -44,7 +45,7 @@ def get_advanced_dynamic_data(symbol):
     
     return df
 
-st.title("🛡️ 五維共振：Y 軸固定對齊終端")
+st.title("🛡️ 五維共振：1個月精準視角")
 
 stock_id = st.sidebar.text_input("輸入台股代碼", value="2330.TW")
 df = get_advanced_dynamic_data(stock_id)
@@ -58,13 +59,13 @@ if not df.empty:
         line=dict(color="#FFFFFF", width=1.5)
     ), secondary_y=False)
 
-    # 2. 副 Y 軸 (綜合檔位線)
+    # 2. 副 Y 軸 (綜合檔位線) - 已改成藍色
     fig.add_trace(go.Scatter(
         x=df.index, y=df['Final_Score'], name="檔", 
-        line=dict(color="#00d26a", width=2.5)
+        line=dict(color="#00BFFF", width=2.5) # 深天藍色
     ), secondary_y=True)
 
-    # 3. 動態邊界線
+    # 3. 動態邊界線 (維持半透明感)
     fig.add_trace(go.Scatter(
         x=df.index, y=df['Upper_Bound'], name="壓", 
         line=dict(color="rgba(255, 75, 75, 0.4)", width=1, dash='dot')
@@ -74,37 +75,39 @@ if not df.empty:
         line=dict(color="rgba(255, 215, 0, 0.4)", width=1, dash='dot')
     ), secondary_y=True)
 
-    # --- 關鍵修正：固定 Y 軸，禁止手動上下移動 ---
+    # --- 視覺優化設定 ---
     
-    # 左 Y 軸：自動貼合但鎖定手動位移
+    # 左 Y 軸：自動貼合數據，但鎖定手動上下拉動
     fig.update_yaxes(
         secondary_y=False, 
-        autorange=True,      # 視窗滑動時自動計算高低
-        fixedrange=True,     # 禁止手動上下拉動 (關鍵)
+        autorange=True, 
+        fixedrange=True, # 固定 Y 軸，禁止拉動
         showgrid=False, 
         zeroline=False, 
         rangemode="normal"
     )
     
-    # 右 Y 軸：嚴格固定範圍並鎖定
+    # 右 Y 軸：指標範圍
     fig.update_yaxes(
         secondary_y=True, 
         range=[-5, 105], 
-        fixedrange=True,     # 禁止任何手動縮放與位移 (關鍵)
+        fixedrange=True, # 固定指標軸
         gridcolor="rgba(255, 255, 255, 0.05)", 
         zeroline=False
     )
 
-    # X 軸：允許左右滑動尋找日期
+    # X 軸：預設顯示「1 個月」，並允許左右滑動
     fig.update_xaxes(
         tickformat="%Y-%m-%d", 
         fixedrange=False,    # 允許左右滑動
         rangeslider_visible=False
     )
 
-    # 初始預設視窗
-    if len(df) > 252:
-        fig.update_xaxes(range=[df.index[-252], df.index[-1]])
+    # --- 關鍵修正：初始視角設為 1 個月 ---
+    if len(df) > 30:
+        last_date = df.index[-1]
+        start_date = last_date - pd.Timedelta(days=30)
+        fig.update_xaxes(range=[start_date, last_date])
 
     fig.update_layout(
         height=600, 
@@ -117,11 +120,11 @@ if not df.empty:
     )
     
     st.plotly_chart(fig, use_container_width=True, config={
-        'scrollZoom': False,      # 關閉滾輪縮放避免誤觸 Y 軸
+        'scrollZoom': True,       # 支援雙指縮放 X 軸
         'displayModeBar': False
     })
     
-    st.info("📌 **Y 軸已鎖定**：現在你可以放心左右滑動尋找日期，股價軸會自動為你貼合最佳高度，且不會因為手動滑動而上下跑位。")
+    st.info("📅 **視角說明**：目前預設顯示近 1 個月數據。您可以透過**左右滑動**來查看歷史細節，股價軸會自動隨日期調整高度。")
 
 else:
-    st.error("數據加載失敗。")
+    st.error("數據讀取失敗。")
