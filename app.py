@@ -6,8 +6,8 @@ import pandas_ta as ta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# 1. 介面與專業深色風格
-st.set_page_config(page_title="五維一體：進階優化終端", layout="wide", initial_sidebar_state="collapsed")
+# 1. 頁面基礎設定
+st.set_page_config(page_title="五維一體：等比鎖定終端", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("<style>.main { background-color: #0e1117; color: white; }</style>", unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600)
@@ -16,58 +16,85 @@ def get_advanced_data(symbol):
     if df.empty: return df
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     
-    # --- 基礎指標計算 ---
+    # --- 指標計算 (進階優化配方) ---
     df['rsi_r'] = ta.rsi(df['Close'], length=14).rolling(252).rank(pct=True) * 100
     df['bias_r'] = ((df['Close'] - df['Close'].rolling(20).mean()) / df['Close'].rolling(20).mean()).rolling(252).rank(pct=True) * 100
-    
-    # 優化版快速 MACD (6, 13, 5)
     macd = ta.macd(df['Close'], fast=6, slow=13, signal=5)
     df['macd_h'] = macd['MACDh_6_13_5']
     df['macd_r'] = df['macd_h'].rolling(252).rank(pct=True) * 100
-    
     df['adx'] = ta.adx(df['High'], df['Low'], df['Close'])['ADX_14']
-    df['sma_200'] = df['Close'].rolling(200).mean() # 長線濾網
+    df['sma_200'] = df['Close'].rolling(200).mean()
 
-    # --- 進階邏輯：自適應綜權重 ---
+    # 自適應權重邏輯
     def adaptive_logic(r):
-        if r['adx'] > 25: # 趨勢盤
-            return (r['bias_r'] * 0.6 + r['macd_r'] * 0.3 + r['rsi_r'] * 0.1)
-        else: # 盤整盤
-            return (r['rsi_r'] * 0.5 + r['macd_r'] * 0.3 + r['bias_r'] * 0.2)
+        if r['adx'] > 25: return (r['bias_r'] * 0.6 + r['macd_r'] * 0.3 + r['rsi_r'] * 0.1)
+        else: return (r['rsi_r'] * 0.5 + r['macd_r'] * 0.3 + r['bias_r'] * 0.2)
 
-    df['Composite_Raw'] = df.apply(adaptive_logic, axis=1)
-    df['Final_Score'] = df['Composite_Raw'].rolling(10).mean() # 10日平滑
+    df['Final_Score'] = df.apply(adaptive_logic, axis=1).rolling(10).mean()
     
-    # --- 買賣訊號過濾 ---
-    # 買入：低檔 + 動能轉強 + 在年線上 (順勢)
+    # 訊號過濾
     buy_cond = (df['Final_Score'] < 25) & (df['macd_h'] > df['macd_h'].shift(1)) & (df['Close'] > df['sma_200'])
-    # 賣出：高檔 + 動能轉弱
     sell_cond = (df['Final_Score'] > 75) & (df['macd_h'] < df['macd_h'].shift(1))
-    
     df['Buy_Signal'] = buy_cond & (buy_cond.shift(1) == False)
     df['Sell_Signal'] = sell_cond & (sell_cond.shift(1) == False)
     
     return df
 
-st.title("🛡️ 專業級：五維自適應共振系統")
+st.title("🛡️ 五維自適應：等比鎖定終端")
 
-stock_id = st.sidebar.text_input("輸入台股代碼 (例: 2330.TW)", value="2330.TW")
+stock_id = st.sidebar.text_input("輸入台股代碼", value="2330.TW")
 df = get_advanced_data(stock_id)
 
 if not df.empty:
-    plot_df = df.tail(252) # 鎖定一年
+    plot_df = df.tail(252) # 鎖定顯示一年份
     
-    # 1. 圖表顯示 (主軸股價 / 副軸綜合線)
+    # 建立雙 Y 軸
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Close'], name="股價", line=dict(color="rgba(200,200,200,0.3)")), secondary_y=False)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Final_Score'], name="綜合檔位線", line=dict(color="#00d26a", width=3)), secondary_y=True)
-    
-    fig.update_xaxes(tickformat="%Y-%m-%d", dtick="M2", fixedrange=True)
-    fig.update_yaxes(secondary_y=True, range=[0, 100], fixedrange=True)
-    fig.update_layout(height=450, template="plotly_dark", dragmode=False, showlegend=False, margin=dict(l=10, r=10, t=10, b=10))
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-    # 2. 訊號數據表格 (高勝率過濾後)
+    # 1. 主 Y 軸 (股價)：設定自動縮放並禁止手動調整
+    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Close'], name="價", 
+                             line=dict(color="rgba(200,200,200,0.3)", width=1.5)), secondary_y=False)
+
+    # 2. 副 Y 軸 (指標)：固定 0-100 並禁止手動調整
+    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Final_Score'], name="檔", 
+                             line=dict(color="#00d26a", width=3)), secondary_y=True)
+
+    # --- 關鍵修正：自動等比縮放與禁止手動位移 ---
+    # 設定左軸 (股價)
+    fig.update_yaxes(
+        secondary_y=False, 
+        autorange=True,      # 根據畫面數據自動調整範圍
+        fixedrange=True,     # 禁止手動上下拉動/縮放
+        showgrid=False
+    )
+    
+    # 設定右軸 (指標)
+    fig.update_yaxes(
+        secondary_y=True, 
+        range=[0, 100],      # 固定指標高度
+        fixedrange=True,     # 禁止手動上下拉動/縮放
+        gridcolor="rgba(255,255,255,0.05)"
+    )
+
+    # 設定 X 軸 (日期)
+    fig.update_xaxes(
+        tickformat="%Y-%m-%d", 
+        dtick="M2", 
+        fixedrange=True      # 禁止左右縮放，維持一年視角
+    )
+
+    fig.update_layout(
+        height=500, 
+        template="plotly_dark", 
+        hovermode="x unified", 
+        dragmode=False,      # 徹底關閉拖拽功能
+        margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False
+    )
+    
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    
+    # --- 數據表格 ---
     st.subheader("📋 進階策略交易明細")
     signals = plot_df[(plot_df['Buy_Signal']) | (plot_df['Sell_Signal'])].copy()
     
@@ -83,13 +110,7 @@ if not df.empty:
             })
         st.table(pd.DataFrame(table_list))
     else:
-        st.info("當前篩選條件下無高勝率訊號 (或標的處於長期空頭)。")
-
-    # 底部狀態區
-    curr = df.iloc[-1]
-    col1, col2 = st.columns(2)
-    col1.metric("當前綜合檔位", f"{curr['Final_Score']:.1f}")
-    col2.metric("趨勢環境 (ADX)", f"{curr['adx']:.1f}")
+        st.info("一年內無高勝率訊號。")
 
 else:
-    st.error("請確認代碼輸入是否正確。")
+    st.error("代碼錯誤。")
