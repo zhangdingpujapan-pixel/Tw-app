@@ -7,33 +7,21 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 1. 頁面基礎設定
-st.set_page_config(page_title="五維策略：核心資產終端", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="五維策略：全資產監控雷達", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("<style>.main { background-color: #0e1117; color: white; }</style>", unsafe_allow_html=True)
 
-# 定義股票清單
+# 定義完整股票清單
 ASSET_LIST = {
     "市值前十大公司": {
-        "2330.TW": "台積電",
-        "2317.TW": "鴻海",
-        "2454.TW": "聯發科",
-        "2308.TW": "台達電",
-        "2881.TW": "富邦金",
-        "2882.TW": "國泰金",
-        "2382.TW": "廣達",
-        "2891.TW": "中信金",
-        "3711.TW": "日月光投控",
-        "2412.TW": "中華電"
+        "2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科", "2308.TW": "台達電",
+        "2881.TW": "富邦金", "2882.TW": "國泰金", "2382.TW": "廣達", "2891.TW": "中信金",
+        "3711.TW": "日月光投控", "2412.TW": "中華電"
     },
     "優秀市值型 ETF": {
-        "0050.TW": "元大台灣50",
-        "006208.TW": "富邦台50",
-        "00922.TW": "國泰台灣領袖50"
+        "0050.TW": "元大台灣50", "006208.TW": "富邦台50", "00922.TW": "國泰台灣領袖50"
     },
     "熱門高股息 ETF": {
-        "0056.TW": "元大高股息",
-        "00878.TW": "國泰永續高股息",
-        "00919.TW": "群益台灣精選高息",
-        "00929.TW": "復華台灣科技優息"
+        "0056.TW": "元大高股息", "00878.TW": "國泰永續高股息", "00919.TW": "群益台灣精選高息", "00929.TW": "復華台灣科技優息"
     }
 }
 
@@ -65,20 +53,45 @@ def get_full_data(symbol):
     df['Resistance_Dots'] = np.where(df['Final_Score'] >= df['Upper_Bound'], df['Final_Score'], np.nan)
     return df
 
-# --- 側邊欄選單 ---
-st.sidebar.header("📁 資產篩選器")
-category = st.sidebar.selectbox("選擇資產類別", list(ASSET_LIST.keys()))
+# --- 頂部：訊號監測雷達 ---
+st.subheader("📡 全資產訊號監測雷達 (今日即時)")
+
+all_symbols = {}
+for cat in ASSET_LIST: all_symbols.update(ASSET_LIST[cat])
+
+radar_results = []
+with st.spinner("正在掃描全市場訊號..."):
+    for sym, name in all_symbols.items():
+        scan_df = get_full_data(sym)
+        if not scan_df.empty:
+            curr = scan_df.iloc[-1]
+            status = "⚪ 區間穩定"
+            if curr['Final_Score'] <= curr['Lower_Bound']: status = "🟡 抄底訊號"
+            elif curr['Final_Score'] >= curr['Upper_Bound']: status = "🔴 過熱警告"
+            
+            radar_results.append({
+                "代碼": sym, "名稱": name, "目前分數": f"{curr['Final_Score']:.1f}",
+                "支撐邊界": f"{curr['Lower_Bound']:.1f}", "壓力邊界": f"{curr['Upper_Bound']:.1f}",
+                "狀態": status
+            })
+
+radar_df = pd.DataFrame(radar_results)
+# 排序：先看有訊號的
+radar_df['sort_val'] = radar_df['狀態'].apply(lambda x: 0 if "🟡" in x else (2 if "🔴" in x else 1))
+radar_df = radar_df.sort_values("sort_val").drop(columns="sort_val")
+
+st.table(radar_df)
+
+st.markdown("---")
+
+# --- 側邊欄：單一標的詳細分析 ---
+st.sidebar.header("🔍 單一標的深度分析")
+category = st.sidebar.selectbox("資產類別", list(ASSET_LIST.keys()))
 asset_options = ASSET_LIST[category]
-selected_asset_name = st.sidebar.selectbox("選擇標的", list(asset_options.values()))
-# 根據名稱反查代碼
+selected_asset_name = st.sidebar.selectbox("詳細標的", list(asset_options.values()))
 stock_id = [k for k, v in asset_options.items() if v == selected_asset_name][0]
 
-# 手動輸入功能保留
-manual_id = st.sidebar.text_input("或手動輸入代碼 (EX: 2330.TW)", value="")
-if manual_id: stock_id = manual_id
-
 st.title(f"🛡️ {selected_asset_name} ({stock_id})")
-
 df = get_full_data(stock_id)
 
 if not df.empty:
@@ -100,12 +113,11 @@ if not df.empty:
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # --- 100 萬回測 ---
-    st.subheader(f"📊 100萬回測：{selected_asset_name}")
+    st.subheader("📊 2025年 100萬回測數據")
     backtest_df = df[df.index >= "2025-01-01"].copy()
     
     if not backtest_df.empty:
         curr_p = backtest_df['Close'].iloc[-1]
-        
         # 系統策略
         y_days = backtest_df[backtest_df['Final_Score'] <= backtest_df['Lower_Bound']]
         num_y = len(y_days)
@@ -126,13 +138,10 @@ if not df.empty:
 
         res = pd.DataFrame({
             "策略項目": ["五維系統 (黃點布局)", "定期定額 (每月1號)"],
-            "買入頻率": [f"{num_y} 次交易日", f"{num_m} 個月"],
-            "期末總價值": [f"${sys_val:,.0f}", f"${dca_val:,.0f}"],
+            "期末總市值": [f"${sys_val:,.0f}", f"${dca_val:,.0f}"],
             "累計報酬率": [f"{sys_roi:.2f}%", f"{dca_roi:.2f}%"]
         })
         st.table(res)
-    else:
-        st.info("2025 年數據尚在累積中...")
 
 else:
     st.error("代碼有誤或查無數據。")
