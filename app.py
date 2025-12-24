@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 1. 頁面基礎設定
-st.set_page_config(page_title="五維策略：三合一決策終端", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="五維策略：全方位決策終端", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("<style>.main { background-color: #0e1117; color: white; }</style>", unsafe_allow_html=True)
 
 ASSET_LIST = {
@@ -48,7 +48,6 @@ def get_full_data(symbol):
     df['Lower_Bound'] = df['Final_Score'].rolling(252).quantile(0.15)
     df['Upper_Bound'] = df['Final_Score'].rolling(252).quantile(0.85)
     df['Support_Dots'] = np.where(df['Final_Score'] <= df['Lower_Bound'], df['Final_Score'], np.nan)
-    df['Resistance_Dots'] = np.where(df['Final_Score'] >= df['Upper_Bound'], df['Final_Score'], np.nan)
     
     return df, ticker.info
 
@@ -56,12 +55,12 @@ def get_full_data(symbol):
 tab1, tab2 = st.tabs(["📡 2025 績效排行榜", "🔍 深度分析 (籌碼/基本/技術)"])
 
 with tab1:
-    st.subheader("📊 2025 全資產績效總覽")
+    st.subheader("📊 2025 全資產績效總覽 (100萬策略)")
     all_symbols = {}
     for cat in ASSET_LIST: all_symbols.update(ASSET_LIST[cat])
     
     radar_results = []
-    with st.spinner("掃描市場中..."):
+    with st.spinner("同步回測中..."):
         for sym, name in all_symbols.items():
             scan_df, _ = get_full_data(sym)
             if not scan_df.empty:
@@ -82,31 +81,39 @@ with tab2:
     
     df, info = get_full_data(sid)
     if not df.empty:
-        # 圖表區域 (技術面)
+        # 圖表區域 (修正：補回動態邊界線)
         st.subheader(f"📈 技術面趨勢：{asset_name} ({sid})")
         fig = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        # 1. 股價 (主軸)
         fig.add_trace(go.Scatter(x=df.index, y=df['Close'], name="價", line=dict(color="#FFFFFF", width=1.5)), secondary_y=False)
+        
+        # 2. 五維分數與動態邊線 (副軸)
         fig.add_trace(go.Scatter(x=df.index, y=df['Final_Score'], name="檔", line=dict(color="#00BFFF", width=2.5)), secondary_y=True)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Support_Dots'], mode='markers', marker=dict(color="#FFD700", size=6)), secondary_y=True)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Upper_Bound'], name="壓", line=dict(color="rgba(255, 75, 75, 0.4)", width=1, dash='dot')), secondary_y=True)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Lower_Bound'], name="撐", line=dict(color="rgba(255, 215, 0, 0.4)", width=1, dash='dot')), secondary_y=True)
+        
+        # 3. 抄底訊號點
+        fig.add_trace(go.Scatter(x=df.index, y=df['Support_Dots'], mode='markers', marker=dict(color="#FFD700", size=6), name="抄底區"), secondary_y=True)
+        
         fig.update_yaxes(secondary_y=False, showgrid=False)
         fig.update_yaxes(secondary_y=True, range=[-5, 105], gridcolor="rgba(255, 255, 255, 0.05)")
         fig.update_xaxes(range=[df.index[-1] - pd.Timedelta(days=30), df.index[-1]])
-        fig.update_layout(height=400, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10), showlegend=False)
+        fig.update_layout(height=450, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10), showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
         # 資訊排列
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("🏛️ 籌碼面：法人買賣超 (近5日預估)")
-            # 註：yfinance 目前無法直接取得台股三大法人即時明細，此處以成交量與動量模擬籌碼強弱，實務上建議結合台股 API
+            st.subheader("🏛️ 籌碼面：法人動向預估")
             vol_change = df['Volume'].pct_change().iloc[-5:]
             price_change = df['Close'].pct_change().iloc[-5:]
             inst_trend = []
             for i in range(5):
                 date_str = df.index[-(5-i)].strftime('%m/%d')
                 trend = "買超" if price_change.iloc[-(5-i)] > 0 and vol_change.iloc[-(5-i)] > 0 else "賣超"
-                inst_trend.append({"日期": date_str, "外資/投信預估": trend, "成交量變動": f"{vol_change.iloc[-(5-i)]*100:+.1f}%"})
+                inst_trend.append({"日期": date_str, "法人預估": trend, "成交量變動": f"{vol_change.iloc[-(5-i)]*100:+.1f}%"})
             st.table(pd.DataFrame(inst_trend))
 
         with col2:
@@ -122,6 +129,3 @@ with tab2:
                 ]
             }
             st.table(pd.DataFrame(fundamental_data))
-
-        # 100 萬回測總結
-        st.info(f"💡 **決策參考**：{asset_name} 目前本益比為 {info.get('trailingPE', 'N/A')}。當五維分數出現 **黃色點點** 且 **籌碼面顯示買超** 時，通常是高勝率進場點。")
