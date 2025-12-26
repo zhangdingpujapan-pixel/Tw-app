@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # 1. 頁面基礎設定
-st.set_page_config(page_title="五維策略：移動止盈監控版", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="五維策略：分頁決策終端", layout="wide", initial_sidebar_state="collapsed")
 st.markdown("<style>.main { background-color: #0e1117; color: white; }</style>", unsafe_allow_html=True)
 
 ASSET_LIST = {
@@ -31,56 +31,31 @@ def get_full_data(symbol):
     if df.empty: return df, None
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     
-    # --- 1. 指標計算 ---
+    # 五維指標計算
     df['rsi_r'] = ta.rsi(df['Close'], length=14).rolling(252).rank(pct=True) * 100
     df['bias_r'] = ((df['Close'] - df['Close'].rolling(20).mean()) / df['Close'].rolling(20).mean()).rolling(252).rank(pct=True) * 100
     macd = ta.macd(df['Close'], fast=6, slow=13, signal=5)
     df['macd_r'] = macd['MACDh_6_13_5'].rolling(252).rank(pct=True) * 100
-    df['mfi_r'] = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14).rolling(252).rank(pct=True) * 100
+    df['adx'] = ta.adx(df['High'], df['Low'], df['Close'])['ADX_14']
+    df['atr'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
+
+    def adaptive_logic(r):
+        if pd.isna(r['adx']) or pd.isna(r['atr']): return 50
+        base = (r['bias_r'] * 0.6 + r['macd_r'] * 0.3 + r['rsi_r'] * 0.1) if r['adx'] > 25 else (r['rsi_r'] * 0.5 + r['macd_r'] * 0.3 + r['bias_r'] * 0.2)
+        return (base + 50) / 2 if (abs(r['Close'] - r['Open']) / r['atr'] if r['atr'] != 0 else 0) > 2.5 else base
+
+    df['Final_Score'] = df.apply(adaptive_logic, axis=1).rolling(10).mean()
+    df['Lower_Bound'] = df['Final_Score'].rolling(252).quantile(0.15)
+    df['Upper_Bound'] = df['Final_Score'].rolling(252).quantile(0.85)
+    df['is_support'] = df['Final_Score'] <= df['Lower_Bound']
     
-    raw_scores = (df['rsi_r'] * 0.3 + df['bias_r'] * 0.3 + df['macd_r'] * 0.2 + df['mfi_r'] * 0.2)
-    df['Final_Score'] = ta.hma(raw_scores, length=8)
-    
-    df['Lower_Bound'] = df['Final_Score'].rolling(252).quantile(0.10)
-    df['Upper_Bound'] = df['Final_Score'].rolling(252).quantile(0.90)
-    
-    # --- 2. 移動止盈邏輯 (回檔 5%) ---
-    trailing_percent = 0.05
-    df['is_bottom'] = df['Final_Score'] <= df['Lower_Bound']
-    df['is_exit_score'] = (df['Final_Score'].shift(1) >= df['Upper_Bound']) & (df['Final_Score'] < df['Upper_Bound'])
-    
-    # 計算買入後的最高點
-    df['trailing_stop'] = np.nan
-    df['is_trailing_exit'] = False
-    
-    last_buy_idx = -1
-    highest_price = 0
-    
-    for i in range(len(df)):
-        if df['is_bottom'].iloc[i]:
-            last_buy_idx = i
-            highest_price = df['Close'].iloc[i]
-        
-        if last_buy_idx != -1:
-            if df['Close'].iloc[i] > highest_price:
-                highest_price = df['Close'].iloc[i]
-            
-            # 如果價格低於最高點的 95%，觸發移動止盈
-            stop_price = highest_price * (1 - trailing_percent)
-            df.iloc[i, df.columns.get_loc('trailing_stop')] = stop_price
-            
-            if df['Close'].iloc[i] < stop_price:
-                df.iloc[i, df.columns.get_loc('is_trailing_exit')] = True
-                last_buy_idx = -1 # 重置買入狀態，直到下一個黃點
-                highest_price = 0
-                
     return df, ticker.info
 
-# --- UI ---
-tab1, tab2 = st.tabs(["📡 實時移動止盈監測", "🔍 深度轉折分析"])
+# --- 分頁系統 ---
+tab1, tab2 = st.tabs(["📡 2025 績效排行榜", "🔍 深度分析 (分頁籌碼紀錄)"])
 
 with tab1:
-    st.subheader("📊 2025 全資產移動止盈狀態")
+    st.subheader("📊 2025 全資產績效總覽")
     all_symbols = {}
     for cat in ASSET_LIST: all_symbols.update(ASSET_LIST[cat])
     
@@ -89,70 +64,82 @@ with tab1:
         scan_df, _ = get_full_data(sym)
         if not scan_df.empty:
             curr = scan_df.iloc[-1]
-            status = "⚪ 持有/觀望"
-            if curr['is_bottom']: status = "🟡 買入(底)"
-            elif curr['is_trailing_exit']: status = "🟣 移動止盈(回檔5%)"
-            elif curr['is_exit_score']: status = "🔵 分數轉弱停利"
-            
-            radar_results.append({
-                "標的": name, 
-                "目前價格": round(curr['Close'], 1), 
-                "狀態": status, 
-                "離最高點回檔": f"{((curr['Close']/scan_df['Close'].tail(20).max()-1)*100):+.1f}%"
-            })
-    st.table(pd.DataFrame(radar_results))
+            bt_df = scan_df[scan_df.index >= "2025-01-01"]
+            y_days = bt_df[bt_df['is_support']]
+            roi = (((1000000 / len(y_days) / y_days['Close']).sum() * curr['Close'] - 1000000) / 10000) if len(y_days) > 0 else 0
+            status = "🟡 抄底" if curr['is_support'] else ("🔴 過熱" if curr['Final_Score'] >= curr['Upper_Bound'] else "⚪ 穩定")
+            radar_results.append({"標的": name, "價格": round(curr['Close'], 1), "2025回報": f"{roi:.2f}%", "狀態": status, "sort_roi": roi})
+    
+    st.table(pd.DataFrame(radar_results).sort_values("sort_roi", ascending=False).drop(columns="sort_roi"))
 
 with tab2:
-    st.sidebar.header("🔍 分析設定")
+    st.sidebar.header("🔍 標的選擇")
     cat = st.sidebar.selectbox("類別", list(ASSET_LIST.keys()))
     asset_name = st.sidebar.selectbox("標的", list(ASSET_LIST[cat].values()))
     sid = [k for k, v in ASSET_LIST[cat].items() if v == asset_name][0]
     
     df, info = get_full_data(sid)
     if not df.empty:
-        st.subheader(f"📈 {asset_name}：移動止盈與五維監控")
+        # 技術圖表
+        st.subheader(f"📈 技術面趨勢：{asset_name} ({sid})")
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        
-        # 股價與移動止盈線
         fig.add_trace(go.Scatter(x=df.index, y=df['Close'], name="價", line=dict(color="#FFFFFF", width=2)), secondary_y=False)
-        fig.add_trace(go.Scatter(x=df.index, y=df['trailing_stop'], name="移動止盈線", line=dict(color="rgba(160, 32, 240, 0.4)", dash='dash')), secondary_y=False)
-        
-        # 五維分數
         fig.add_trace(go.Scatter(x=df.index, y=df['Final_Score'], name="檔", line=dict(color="#00BFFF", width=2.5)), secondary_y=True)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Upper_Bound'], name="壓", line=dict(color="rgba(255, 75, 75, 0.4)", width=1, dash='dot')), secondary_y=True)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Lower_Bound'], name="撐", line=dict(color="rgba(255, 215, 0, 0.4)", width=1, dash='dot')), secondary_y=True)
         
-        # 標記訊號
-        bottoms = df[df['is_bottom']]
-        score_exits = df[df['is_exit_score']]
-        trail_exits = df[df['is_trailing_exit']]
+        support_df = df[df['is_support']]
+        fig.add_trace(go.Scatter(x=support_df.index, y=support_df['Final_Score'], mode='markers', marker=dict(color="#FFD700", size=8), name="抄底"), secondary_y=True)
         
-        fig.add_trace(go.Scatter(x=bottoms.index, y=bottoms['Close'], mode='markers', marker=dict(color="#FFD700", size=10, symbol="triangle-up"), name="買"), secondary_y=False)
-        fig.add_trace(go.Scatter(x=score_exits.index, y=score_exits['Close'], mode='markers', marker=dict(color="#00FFFF", size=10, symbol="triangle-down"), name="分數賣"), secondary_y=False)
-        fig.add_trace(go.Scatter(x=trail_exits.index, y=trail_exits['Close'], mode='markers', marker=dict(color="#A020F0", size=12, symbol="x"), name="移動止盈賣"), secondary_y=False)
-        
-        fig.update_xaxes(range=[df.index[-1] - pd.Timedelta(days=90), df.index[-1]])
-        fig.update_layout(height=450, template="plotly_dark", showlegend=False)
+        fig.update_yaxes(title_text="價格", secondary_y=False, showgrid=False)
+        fig.update_yaxes(title_text="五維分數", secondary_y=True, range=[-5, 105], gridcolor="rgba(255, 255, 255, 0.05)")
+        fig.update_xaxes(range=[df.index[-1] - pd.Timedelta(days=30), df.index[-1]])
+        fig.update_layout(height=400, template="plotly_dark", margin=dict(l=50, r=50, t=20, b=20), showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # 紀錄表
+        # --- 分頁式籌碼紀錄 ---
         st.markdown("---")
-        st.subheader("🗓️ 歷史操作紀錄")
-        full_h = df.tail(252).copy()
-        recs = []
-        for i in range(len(full_h)-1, -1, -1):
-            r = full_h.iloc[i]
-            sig = ""
-            if r['is_bottom']: sig = "🟡 買入"
-            elif r['is_trailing_exit']: sig = "🟣 移動止盈"
-            elif r['is_exit_score']: sig = "🔵 分數轉弱"
-            recs.append({"日期": full_h.index[i].strftime('%Y/%m/%d'), "訊號": sig, "價格": f"{r['Close']:.2f}", "移動止盈點": f"{r['trailing_stop']:.1f}" if not pd.isna(r['trailing_stop']) else "--"})
+        st.subheader("🏛️ 歷史紀錄查詢 (每頁 10 筆)")
         
-        if 'p5' not in st.session_state: st.session_state.p5 = 0
-        c1, c2, c3 = st.columns([1,2,1])
-        with c1: 
-            if st.button("⬅️ 上一頁"): st.session_state.p5 = max(0, st.session_state.p5-1)
-        with c3: 
-            if st.button("下一頁 ➡️"): st.session_state.p5 += 1
+        # 準備一整年的數據 (倒序)
+        full_history = df.tail(252).copy() # 取一年約252個交易日
+        vol_change = full_history['Volume'].pct_change()
+        price_change = full_history['Close'].pct_change()
         
-        st.table(pd.DataFrame(recs[st.session_state.p5*10 : st.session_state.p5*10+10]))
+        all_records = []
+        for i in range(len(full_history)-1, -1, -1):
+            row = full_history.iloc[i]
+            all_records.append({
+                "日期": full_history.index[i].strftime('%Y/%m/%d'),
+                "訊號": "🟡 抄底" if row['is_support'] else "",
+                "收盤價": f"{row['Close']:.2f}",
+                "法人預估": "買超" if (price_change.iloc[i] > 0 and vol_change.iloc[i] > 0) else "賣超",
+                "量能增減": f"{vol_change.iloc[i]*100:+.1f}%" if not pd.isna(vol_change.iloc[i]) else "--"
+            })
+        
+        # 分頁邏輯
+        items_per_page = 10
+        total_pages = (len(all_records) // items_per_page) + (1 if len(all_records) % items_per_page > 0 else 0)
+        
+        if 'page_num' not in st.session_state:
+            st.session_state.page_num = 0
 
-        st.info("💡 **移動止盈說明**：系統會在買入後自動跟蹤最高價，一旦股價從波段高點回檔 5% (🟣 紫色 X)，即判定趨勢反轉並離場，這能幫你鎖定大部分利潤。")
+        # 分頁按鈕佈局
+        col_prev, col_mid, col_next = st.columns([1, 2, 1])
+        with col_prev:
+            if st.button("⬅️ 上一頁") and st.session_state.page_num > 0:
+                st.session_state.page_num -= 1
+        with col_mid:
+            st.write(f"第 {st.session_state.page_num + 1} / {total_pages} 頁 (共 {len(all_records)} 筆)")
+        with col_next:
+            if st.button("下一頁 ➡️") and st.session_state.page_num < total_pages - 1:
+                st.session_state.page_num += 1
+
+        # 顯示當前頁面資料
+        start_idx = st.session_state.page_num * items_per_page
+        end_idx = start_idx + items_per_page
+        st.table(pd.DataFrame(all_records[start_idx:end_idx]))
+
+        # 基本面輔助
+        st.markdown("---")
+        st.write(f"目前 P/E: {info.get('trailingPE', 'N/A')} | P/B: {info.get('priceToBook', 'N/A')} | 市值: {info.get('marketCap', 0)/1e12:.2f}T")
